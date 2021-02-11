@@ -1,0 +1,153 @@
+---
+title: "Module 1"
+author: "David Blumenstiel"
+date: "1/30/2021"
+output: html_document
+---
+
+
+**Principles of Data Visualization and Introduction to ggplot2**
+
+I have provided you with data about the 5,000 fastest growing companies in the US, as compiled by Inc. magazine. lets read this in:
+
+```{r}
+inc <- read.csv("https://raw.githubusercontent.com/charleyferrari/CUNY_DATA_608/master/module1/Data/inc5000_data.csv", header= TRUE)
+
+```
+
+And lets preview this data:
+
+```{r}
+
+head(inc)
+
+```
+```{r}
+
+summary(inc)
+
+```
+
+Think a bit on what these summaries mean. Use the space below to add some more relevant non-visual exploratory information you think helps you understand this data:
+
+
+We'll start with this:
+```{r}
+library(psych)
+describe(inc)  # A nice little function that gives you a bit more than summary()
+
+```
+
+Lot's of information here, not all of which is relevant (categorical data isn't going to have a mean for example), but includes some basics like n and standard deviations, and some more niche stuff like skew and kurtosis.
+
+Another pretty basic but helpful thing to do:
+
+
+```{r}
+print(dim(inc))
+print(sapply(inc, class))
+```
+
+You technically get this stuff by printing the head and looking at the data-viewer (top right), but it's helpful to know what the data 'looks like' 
+
+
+
+## Question 1
+
+Create a graph that shows the distribution of companies in the data-set by State (ie how many are in each state). There are a lot of States, so consider which axis you should use. This visualization is ultimately going to be consumed on a 'portrait' oriented screen (ie taller than wide), which should further guide your layout choices.
+
+```{r fig.width=10, fig.height=9}
+library(ggplot2)
+library(dplyr)
+
+State_counts <- inc %>%          #Counts the number of states for each state
+  group_by(State) %>%
+  count()
+
+
+
+
+ggplot(State_counts, aes(x = reorder(State, n), y = n)) +  #tells it to look at the 'State' variable in the 'inc dataset, orders it from highest to lowest
+  geom_bar(stat = 'identity', width=0.8, fill = 'blue', color = 'black') + #Makes a barplot, also adds color so it's less dull
+  coord_flip() + #Inverts it so the states are listed on the y axis, which I like to do when there are lots of categories
+  ggtitle('Number of Fast Growing Companies by State') +  #A title
+  xlab("State") +    #Things got flipped, so this will show on the actual y axis
+  ylab("Number of Companies") +
+  scale_y_continuous(breaks = seq(0, 750, by = 50)) #Adds a few more tickmarks
+  
+  
+  
+```
+
+A pretty basic bar-plot.  Counting n on the x axis makes categorical labeling easier when there are lots of categories like there are here.  An alternative to that would be to rotate the labels, but when they're short abbreviations like this it doesn't make as much sense.
+
+
+## Question 2
+
+Lets dig in on the state with the 3rd most companies in the data set. Imagine you work for the state and are interested in how many people are employed by companies in different industries. Create a plot that shows the average and/or median employment by industry for companies in this state (only use cases with full data, use R's `complete.cases()` function.) In addition to this, your graph should show how variable the ranges are, and you should deal with outliers.
+
+```{r fig.width=10, fig.height=5}
+#First we'll sepeate NY, the one with the third most companies in the dataset
+NY <- inc[complete.cases(inc),] %>% #Removes incomplete observations
+  filter(State == 'NY') %>%  #Only NY.  Were I doing this with a non-static dataset, I would select this programatticaly
+  select(Industry, Employees) #We just need the industry and employees for each company
+  
+#Deals with outliers by using data within a certain multiple of the IQR from the third quartile
+#Note: this is taking the whole dataset into account, and not doing it per industry (which would or would not be optimal)
+Outlier_coef = 3  #Choose 3 for this because it looks good
+NY <- NY[NY$Employees < quantile(NY$Employees, 0.75) + IQR(NY$Employees)*Outlier_coef,]
+
+
+
+#Makes box and whisker plot
+ggplot(NY, aes(x = Industry, y = Employees)) +
+  geom_boxplot()+
+  scale_x_discrete(guide = guide_axis(angle = 50)) + #Founds this line here: https://stackoverflow.com/questions/1330989/rotating-and-spacing-axis-labels-in-ggplot2
+  scale_y_continuous(breaks = seq(0, 400, by = 25))
+  
+
+
+
+
+```
+
+Above is a basic box and whisker plot, with an outlier cutoff at 3*IQR (for the data-set as a whole).  I like box and whisker for cases like this because it gives a decent and quick visualization of where the data is and how variable it is.  The outlier cutoff here is a bit trickier: I went with about twice the usual to preserve some of the data.  Including all outliers obscures the plot.  
+
+
+
+## Question 3
+
+Now imagine you work for an investor and want to see which industries generate the most revenue per employee. Create a chart that makes this information clear. Once again, the distribution per industry should be shown.
+
+(Assuming this is for all states again)
+```{r fig.width=10, fig.height=5}
+IRE <- inc[complete.cases(inc),] %>% #Gets rid of those pesky Na's
+  mutate(rev_per_emp = Revenue/Employees) %>% #Makes a new variable of revenue per employee
+  select(Industry, rev_per_emp) %>%  #Subsets the variables we want
+  group_by(Industry) %>% #Groups by indsutry
+  summarize(Median = median(rev_per_emp), n = n(), Q1 = quantile(rev_per_emp, 0.25), Q3 = quantile(rev_per_emp, 0.75)) # gives us stats we want
+
+
+ggplot(IRE, aes(x = reorder(Industry, -Median), y = Median)) +  #Iniates plot.  Orders it by decending order
+  geom_bar(stat = 'identity', col = "black", fill ="lightblue") + #Makes it a barplot
+  geom_errorbar(aes(ymin = Median - Q1, ymax = Median + Q3), width = 0.5) + #Techically not 'error'; this adds the IQR
+  scale_x_discrete(guide = guide_axis(angle = 50)) +   #Angles X axis text so it's readable
+  scale_y_continuous(labels=scales::dollar_format(), breaks = seq(0, 1e7, by = 2e5)) + #Adds scale formatting.  https://datavizpyr.com/dollar-format-for-axis-labels-with-ggplot2/
+  ylab("Revenue per Employee") +   #Labels
+  xlab('Industry') +
+  ggtitle("Median Revenue per Employee by Industry")
+  
+  
+
+```
+
+Above is the median revenue per employee by industry.  The blue bars are medians, and the thin blacks bars represent variation as the inter-quartile range. 
+
+I went with a bar-plot here because while they may not get quite as much information across as a box-plot, it's a bit easier to read and still gives you a good sense of variability if you use the 'error' bars .
+
+A note on statistics: if I were trying to present information to an investor, I would try to present 'typical' cases instead of average ones, especially considering how skewed this data-set is.  Thus, I have used medians and IQRs to represent the data here instead of means and standard deviations.  This is also much more resilient when it comes to outliers and variability, and as you can see, there's quite a lot of both, and all outliers are taken into account this time. 
+
+
+
+
+
