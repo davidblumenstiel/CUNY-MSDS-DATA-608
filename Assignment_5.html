@@ -1,0 +1,117 @@
+<html>
+<body>
+
+
+<head><title>Assignment 5, David Blumenstiel</title></head>
+
+<h1>Assignment 5</h1>
+<h2>David Blumenstiel</h2>
+
+<br>
+<br>
+
+
+
+
+
+<h1>Question 1</h1>
+<h3>Create a function to reverse any word that you type in. This can be typed into either an input box or an alert box, and then print the result in a box or on the webpage.</h3>
+<br>
+
+<script type="text/javascript">
+
+function reverse(){
+	var rev = document.getElementById('word').value;
+	
+	//took inspiration from: https://www.freecodecamp.org/news/how-to-reverse-a-string-in-javascript-in-3-different-ways-75e4763c68cb/
+	var reversed = rev.split("").reverse().join("");
+
+	// helpful: https://stackoverflow.com/questions/4706960/how-to-return-a-variable-from-a-javascript-function-into-html-body
+	var output1 = document.getElementById('output1');
+	output1.innerHTML = reversed
+
+}
+
+
+</script>
+
+	
+<p>
+<form>
+    <input id="word" type="text" size="4">
+    <input type="button" value="reverse" onClick="reverse();">
+    
+</form>
+</p>
+
+<div id="output1"></div>
+
+<br>
+<br>
+
+
+
+
+
+<h1>Question 2</h1>
+<h3>Create a function that takes an input number, and prints a table with the first 20 multiples of the number, in order 5x4.</h3>
+<br>
+
+
+<script type="text/javascript">
+
+function update_table(){
+
+	
+	var val_in = document.getElementById('num').value;
+
+
+	// from with some edits: https://stackoverflow.com/questions/14643617/create-table-using-javascript                    
+  	var body = document.getElementById('output2');
+  	var tbl = document.createElement('table');
+  	tbl.style.width = '100%';
+  	tbl.setAttribute('border', '1');
+  	var tbdy = document.createElement('tbody');
+
+  	for (var i = 0; i < 5; i++) {
+    		var tr = document.createElement('tr');
+
+    		for (var j = 0; j < 4; j++) {
+			var calc = (i*4 + j + 1) * val_in;                                    
+        		var td = document.createElement('td');
+        		td.appendChild(document.createTextNode(calc));
+        		
+			tr.appendChild(td);
+     			
+			
+    		}
+    		tbdy.appendChild(tr);
+  	}
+  	tbl.appendChild(tbdy);
+  	//body.appendChild(tbl);
+    
+
+	document.getElementById('output2').appendChild(tbl);
+
+}
+
+
+</script>
+
+
+
+<p>
+<form>
+    <input id="num" type="number" size="4">
+    <input type="button" value="make table" onClick="update_table();">
+    	
+</form>
+</p>
+
+<div id="output2"></div>
+
+
+
+
+</body>
+</html>
