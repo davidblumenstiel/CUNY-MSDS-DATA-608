@@ -1,0 +1,467 @@
+
+###############################################################
+################ Global Fires 1997-2015 #######################
+###############################################################
+
+
+############################################################
+############### Data Loading and Prep ######################
+
+
+##### Libraries
+library(shiny)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(viridis)
+library(forcats)
+library(paletteer)
+
+
+
+#First, we import the datasets, and load the libraries we'll be using.  
+#The data was aquired as an Excel workbook from : ttps://sedac.ciesin.columbia.edu/data/set/sdei-global-fire-emissions-indicators-country-level-1997-2015.  Total carbon contents (TCC) were origionlly seperated out into different sheets within the workbook by the type of fire.  Within Excel, the different sheets containing TCC data were combined and exported in .csv format.  Area Burned was contained seperately in the workbook, and was also exported as a .csv file.  Both files were then uploaded to GitHub for ease of access.
+
+
+#There are two primary datasets used in this app: TCC, which contains information on the total carbon content burned per country by year for different types of fires, and Area_burned, which has the area of land burned in each country per year.  The data is processed in various ways depending upon the figure 
+
+
+
+#Custom data combination of total carbon content per country per year for different types of fires.
+TCC <- read.csv("https://raw.githubusercontent.com/davidblumenstiel/CUNY-MSDS-DATA-608/main/Final_Project/sedi_global_fires_all_TCC.csv", stringsAsFactors = FALSE)
+
+#Area burned per year by country
+Area_burned <- read.csv("https://raw.githubusercontent.com/davidblumenstiel/CUNY-MSDS-DATA-608/main/Final_Project/sedi_global_fires_area_burned.csv", stringsAsFactors = FALSE)
+
+
+
+#There are a few variables we won't need.  There are codes for each country, some of which are redundant and can be removed.  There are also some datatypes that need to be changed.  The 'Type' and 'Country' variables should be changed to factors, and all of the carbon and land measurements should be changed to numeric.  Changing the carbon and land measurements to numeric will also require removing commas.  In addition, we'll want the data in a long format with years contained in rows as well (right now it's wide format); this requires a pivot.  
+
+
+#Prepping TCC
+TCC <- TCC %>% rename(ISOCODE = `ï..ISOCODE`) #renames isocode
+TCC[,c("CIESINCODE")] <- NULL #Get's rid a code column
+TCC[,c("COUNTRY","Type")] <- lapply(TCC[,c("COUNTRY","Type")], as.factor) #changes country and type to factor
+TCC[,4:23] <- lapply(TCC[,4:23], function(x) as.numeric(gsub(",", "", x))) #Changes carbon data from char to numeric
+levels(TCC$Type) <- c("Agricultural Waste", "Boreal Forest", "Tropical Deforestation and Degradation", "Peat", "Savanna, Grassland and Shrub-land","Temperate Forest")
+
+#It will also be useful to have a "total fires" category so we can see everything at once
+#calculates total fires per year per country and adds it in as a factor
+fire_totals <- data.frame(lapply(TCC[,4:22], function(x) aggregate(x ~  TCC$ISOCODE, FUN = sum)))
+fire_totals[,c(seq(3,37,2))] <- NULL #gets rid of some redundancies
+fire_totals["Type"] <- "Total"    #The new factor name wil be total
+colnames(fire_totals) <- c(colnames(TCC[,c(1,4:22)]),"Type")   #Sets colnames same as TCC for a bind
+fire_totals["COUNTRY"] <- TCC$COUNTRY[match(fire_totals$ISOCODE, TCC$ISOCODE)] #Finds correct country names for bind
+fire_totals["AVERAGE"] <- round(rowMeans(fire_totals[,2:20]),2) #Finds average of totals through all years
+TCC <- rbind(TCC, fire_totals)  #Adds the totals to TCC
+
+#calculates total fires per year per country
+fire_totals <- data.frame(lapply(TCC[,4:22], function(x) aggregate(x ~  TCC$ISOCODE, FUN = sum)))
+fire_totals[,c(seq(3,37,2))] <- NULL #gets rid of some redundancies
+
+#Pivots TCC data to long form
+colnames(TCC) <- lapply(colnames(TCC), function(x) gsub("TCC", "",x)) #Definitely better ways to do this, but this is easy
+TCC <- TCC %>%
+  pivot_longer(
+    cols = !c(Type,COUNTRY,AVERAGE,ISOCODE), #Selects all columns but country, Average TCC, and Type
+    names_to = "Year", #new variable name of Year for years
+    names_prefix = "Y",
+    values_to = "TCC_Burned" #New variable name of TCC for burn data
+  )
+TCC$Year <- as.numeric(TCC$Year)  
+
+#Prepping Area_Burned
+Area_burned[,c("ï..UNSDCODE","CIESINCODE")] <- NULL  #Get's rid of the code columns
+Area_burned$COUNTRY <- as.factor(Area_burned$COUNTRY) #changes country and type to factor
+Area_burned[,3:22] <- lapply(Area_burned[,3:22], function(x) as.numeric(gsub(",", "", x))) #Changes area data from char to numeric
+
+#Pivots Area Burned data to long form
+colnames(Area_burned) <- lapply(colnames(Area_burned), function(x) gsub("burned_ha", "",x)) #Definitely better ways to do this, but this is easy
+Area_burned <- Area_burned %>%
+  pivot_longer(
+    cols = !c(COUNTRY,Area_sqkm,ISOCODE), #Selects all columns but country and area sqkm
+    names_to = "Year", #new variable name of Year for years
+    names_prefix = "Y",
+    values_to = "Hectares_burned" #New variable name of Hectares_burned for burn data
+  )
+Area_burned$Year <- as.numeric(Area_burned$Year)
+
+
+Area_burned <- Area_burned %>% mutate(Proportion_Burned = Hectares_burned/(Area_sqkm * 100)) #Proportion of country burned every year
+
+
+#Below the objects used for making maps are created.  I'm honestly not sure how the figures get mapped, but joining the fire data, which organized by country, to the world dataset from rnaturalearth, which contains the geometry for mapping and is also organized by country, and then transforming it to the 'sf' object will let us make maps using ggplot2 and the fire data
+
+#Makes sf objects for mapping purposes
+#got some code here from: https://r-spatial.org/r/2018/10/25/ggplot2-sf.html
+world <- ne_countries(scale = "medium", returnclass = "sf") #This data has the nessicary geometry for a map
+TCC_sf <- st_as_sf(merge(TCC, world, by.x = "ISOCODE", by.y = "iso_a3")) #Combines datasets so we can have TCC as an sf object with geometry.  We do loose a few countries (but oh well)
+
+#Proportion of countries burned every year
+Burned_sf <- st_as_sf(merge(Area_burned, world, by.x = "ISOCODE", by.y = "iso_a3")) #Combines datasets so we can have TCC as an sf object with geometry
+Burned_sf$income_grp <- as.factor(Burned_sf$income_grp)
+burnprop_income <- aggregate(Proportion_Burned ~ Year + income_grp, data = Burned_sf, FUN = mean) #Data for one of the plots
+
+#Top burning countries by carbon/pop
+
+top_burners <- aggregate(TCC_Burned ~ COUNTRY + pop_est, data = TCC_sf, FUN = sum) %>%
+  mutate(TCC_per_pop = TCC_Burned / pop_est, .keep = "unused") %>% 
+  arrange(desc(TCC_per_pop)) %>%
+  head(20)
+
+#For the carbon per pop per year map
+#Probably dont need a whole new sf object for this, but it makes it a bit easier
+burners_year_sf <- st_as_sf(merge(aggregate(TCC_Burned ~ ISOCODE + pop_est + Year, data = TCC_sf, FUN = sum) %>%
+                                    mutate(TCC_per_pop = TCC_Burned / pop_est, .keep = "unused"), 
+                                  world, by.x = "ISOCODE", by.y = "iso_a3"))
+
+
+
+
+
+
+
+####################################################################
+################# Layout ###########################################
+
+#below is the layout of the Shiny R App.  This will create a header with the title, my name, and the data citation on top.  Below will be a tab selection, allowing the user to select from the  "plots" -basic figures- and each of the three maps.  Included are a selection input for the plot on the plots tab, time-sliders for different years on each of the map tabs, and a selection for the type of fire on one of the maps.  Below each figure will be a small caption explaining the figure, and highlighting some of the significant findings.
+
+ui <- fluidPage(
+  
+  
+  fluidRow(
+    column(7,
+           #Sets Title
+           titlePanel("Global Fires, 1997-2015"),
+           h4("David Blumenstiel")
+    ),
+    br(),
+    column(4,
+           p("Data Source: Center for International Earth Science Information Network (CIESIN), Columbia University. 2017. Global Fire Emissions Indicators, Country-Level Tabular Data: 1997-2015. Palisades, NY: NASA Socioeconomic Data and Applications Center (SEDAC). https://doi.org/10.7927/H4V69GJ5. Accessed 05/01/2021")
+    )
+    
+  ),
+  
+  #Sets up the different panels
+  #Took some code from https://stackoverflow.com/questions/44222796/shiny-with-multiple-tabs-and-different-sidebar-in-each-tab
+  tabsetPanel(
+    
+    ######################### 
+    # Plots
+    
+    
+    
+    tabPanel("Plots", fluid = TRUE,
+             
+             div(style = "display:inline-block",
+                 
+                 #Select the figure
+                 selectInput(inputId = "select_plot", label = "", 
+                             choices = c("Total Carbon Released per Year by Type of Fire",
+                                         "Proportion of Countries Burned per Year by Income",
+                                         "Top Burning Countries per Capita"), 
+                             selected = "Total Carbon Released per Year by Type of Fire"
+                 )
+             ),
+             
+             hr(),
+             
+             #Display the figure
+             
+             mainPanel(    
+               plotOutput(outputId = "plot1", height = "600", width = "100%"),
+               textOutput(outputId = "caption1")
+             )          
+             
+             
+             
+    ),
+    ######################### 
+    # Map 1
+    
+    
+    tabPanel("Carbon Content of Fires by Type", fluid = TRUE,
+             
+             
+             #Select year
+             #There are options to use date formats, but we'll use numeric for simplicity
+             
+             sliderInput(inputId = "year_map1", label = "Year:", 
+                         min = 1997, max = 2015, value = 1997, 
+                         step = 1, width = "100%", sep = "",
+                         animate = animationOptions(loop = TRUE, interval = 2000, 
+                                                    playButton = "Run")
+             ),
+             
+             #Select type of fire
+             selectInput(inputId = "type", label = "Fire Type", 
+                         choices = unique(TCC$Type), selected = "Total"
+             ),
+             
+             
+             
+             
+             #display the map
+             mainPanel(
+               plotOutput(outputId = "map1", height = "650", width = "130%"),
+               p("Carbon content of fires in million metric tons (MMT) per year by type of fire.  Some trends of note include the conversion of tropical, savanna, and grassland to farmland in Subsaharan Africa (slash-and-burn agriculture, continual brush fires in Australia, and deforestation in the Amazon.  Also noticeable are several large single event fires, such as the 1997 fires in Indonesia.")            
+             )
+    ),
+    
+    ######################### 
+    # Map 2
+    
+    tabPanel("Proportion of Land Burned", fluid = TRUE,
+             
+             
+             #Select year
+             #There are options to use date formats, but we'll use numeric for simplicity
+             
+             sliderInput(inputId = "year_map2", label = "Year:", 
+                         min = 1997, max = 2015, value = 1997, 
+                         step = 1, width = "100%", sep = "",
+                         animate = animationOptions(loop = TRUE, interval = 2000, 
+                                                    playButton = "Run")
+             ),
+             
+             
+             #display the map
+             mainPanel(
+               plotOutput(outputId = "map2", height = "700", width = "130%"),
+               p("The proportion of land in a country burned each year.  This map heavily reflects the conversion of lands in Subsaharan Africa to farmland along with the practice of burning agricultural waste on previously established farmland.")                 
+             )
+    ),
+    
+    ######################### 
+    # Map 3
+    
+    tabPanel("Carbon Released from Fires per Capita", fluid = TRUE,
+             
+             
+             #Select year
+             #There are options to use date formats, but we'll use numeric for simplicity
+             
+             sliderInput(inputId = "year_map3", label = "Year:", 
+                         min = 1997, max = 2015, value = 1997, 
+                         step = 1, width = "100%", sep = "",
+                         animate = animationOptions(loop = TRUE, interval = 2000, 
+                                                    playButton = "Run")
+             ),
+             
+             
+             #display the map
+             mainPanel(
+               plotOutput(outputId = "map3", height = "700", width = "130%"),
+               p("The amount of carbon per capita released in fires each year in metric tons.  This map highlights mostly large area-low population countries with significant burning.  Some significant countries here include: the Central African Republic, which has a population of only 4.5 million as of 2015 and is rapidly undergoing agricultural development via slash-and-burn (as are other countries in the region); Australia, which is a large, sparsely inhabited and fire-prone country; Mongolia, which has had recent history of forest fires.")                 
+             )
+    )
+    
+    
+  )
+  
+)
+
+
+
+
+####################################################################
+################# Back-end #########################################
+
+
+
+#Below are where we designatew the actual figures.  These will take input from user interaction and adjust the plots accordingly.  Thee will be three basic plots and three maps.
+
+#The first plot will be the total carbon released per year by type of fire.  It will be a stacked line plot, which will highlight different contributions from different types of fire along with the total.  It will have years on the x axis and the amount of carbon released across all countries per year on the y axis.
+
+#The second plot will be a grouped bar-plot of the proportion of land in countries burned per year, with year on the x axis and proportion on the y axis.  The bars will be groups of countries by income, as defined in the rnaturalearth's "world" dataset.  This will show how much of each country is burning each year by income group.
+
+#The third plot will be a list of the top 20 burning countries as total carbon burned in fires from years 1997-2015 combined.  It will highligth the countries with the most burning; a barplot should work nicely.
+
+#The first map will be of total carbon burned per year in fires, by type of fire, across all countries.  Countries with more carbon burned will be a brighter color. One will be able to select by year using a slider, or have it run through the years automatically.  One will also be able to select the type of fire.  The scale here will need to adjust automatically, and won't remain constant.
+
+#The second map will be of the porportion of land burned per country each year.  It will have a slider for year selection.  The scale will be fixed.
+
+#The third map will be of carbon burned per person in each country by year.  Like the other maps, it will have a year sider.  The scale will not be fixed due to outliers.
+
+server <- function(input, output) {
+  
+  ################### Basic Plots
+  
+  output$plot1 <- renderPlot({
+    
+    ######################### Plot 1
+    if(input$select_plot == "Total Carbon Released per Year by Type of Fire"){
+      
+      options(scipen=1000000) #Gets rid of scientific notation
+      
+      # Cabon burned per year with types of fires
+      #This takes out the "Total" level, which for this figure is redundant
+      TCC_YearType <- aggregate(TCC_Burned ~ Year + Type, data = subset(TCC, Type != "Total"), FUN = sum)
+      
+      #Initializes the plot.  Will reorder by tons burned, and set units to million tons
+      TCC_plot1 <- ggplot(data = TCC_YearType, aes(x = Year, y = TCC_Burned/1000000,  fill = reorder(Type, TCC_Burned))) +
+        geom_area(alpha=1 , size=.05, colour="black") + #Makes it an area chart with lines inbetween classes
+        labs(x = "Year", y = "Million Tons of Carbon Burned", title = "Carbon Content Burned by Year and Type", fill='Fire Type') +
+        scale_y_continuous(n.breaks = 15)+ #Set's more tics
+        scale_x_continuous(n.breaks = 15, guide = guide_axis(angle = 40))+  #More tics and rotates labels
+        theme(text = element_text(size=18)) #Makes text bigger
+      
+      TCC_plot1
+    }
+    
+    ########################### Plot 2
+    
+    else if(input$select_plot == "Proportion of Countries Burned per Year by Income") {
+      
+      #Proportion Burned by income 
+      Burned_sf$income_grp <- as.factor(Burned_sf$income_grp)
+      burnprop_income <- aggregate(Proportion_Burned ~ Year + income_grp, data = Burned_sf, FUN = mean)
+      
+      #found help here: https://stackoverflow.com/questions/18158461/grouped-bar-plot-in-ggplot
+      burnprop_plot <- ggplot(data = burnprop_income, aes(x = Year, y = Proportion_Burned)) + 
+        geom_bar(aes(fill = income_grp), position = "dodge", stat="identity", width = 0.7) +
+        scale_y_continuous(n.breaks = 15)+ #Set's more tics
+        scale_x_continuous(n.breaks = 15, guide = guide_axis(angle = 40)) + #More tics and rotates labels
+        labs(y  = "Proportion Burned", title = "Proportion of Land Burned per Year by Income", fill = "Income Group")+
+        theme(text = element_text(size=18)) #Makes text bigger
+      
+      burnprop_plot
+    }
+    
+    ########################### Plot 3
+    
+    else if(input$select_plot == "Top Burning Countries per Capita") {
+      
+      top_burners_plot <- ggplot(data = top_burners, aes(x = TCC_per_pop, y = reorder(COUNTRY, TCC_per_pop))) + 
+        geom_bar(stat = "identity", fill = "darkred") +
+        scale_x_continuous(n.breaks = 20) +
+        labs(x = "Tons Carbon Burned", y = "Country", title = "Top 20 Countries by Metric Tons of Carbon Burned per Capita from 1997 to 2015") +
+        theme(text = element_text(size=18)) #Makes text bigger
+      
+      
+      top_burners_plot
+      
+      
+      
+    }
+    
+    
+    
+    
+  })
+  
+  
+  
+  
+  #################### Plot Captions
+  
+  #adds captions for the basic plots.  Will select which caption to use depending on the plot selected.
+  
+  output$caption1 <- renderText ({
+    
+    if(input$select_plot == "Total Carbon Released per Year by Type of Fire"){
+      
+      paste("Total carbon released by fires by type of fire for years 1997-2015.  Savannah, Grassland, and Shrub-land fires are by far the most prevalent carbon source.  The two spikes  on the chart correspond primarily to the 1997 fires in Indonesia, and 2008 fires in central Africa.")
+      
+      
+    }
+    
+    else if(input$select_plot == "Proportion of Countries Burned per Year by Income") {
+      
+      paste("The amount of land burned relative to a nation's area across all countries by income group.  There is a strong correlation between income and how much land is burned, with lower income nations burning significantly more land than higher income nations, likely due to the conversion of lands to agricultural lands via slash-and-burn agriculture, and the burning of agricultural waste.  We can also see that OECD countries burn more than non-OECD countries.  The proportion of countries burned per year has gone down somewhat from 1997 to 2015, primarily driven by low income nations")
+      
+    }
+    
+    else if(input$select_plot == "Top Burning Countries per Capita") {
+      
+      paste("The top 20 fires-per-capita countries arranged by total metric-tons of carbon burned from 1997 to 2015 per person.  These are primarily Sub-Saharan African countries, and are likely due to the transformation of land into farmland and the burning of agricultural wastes (see the fires by type map).  There are several high area-to-population countries on this list, such as Canada, Mongolia, Kazakhstan, and Australia.")
+      
+    }
+    
+    
+  })
+  
+  
+  ################### Map 1
+  
+  output$map1 <- renderPlot({
+    
+    selection_map1 = subset(TCC_sf, Year == input$year_map1 & Type == input$type) #subsets appropriate data
+    
+    tst <- quantile(TCC_sf$TCC_Burned[TCC_sf$Type == "Total"],0.999, names = FALSE)
+    
+    TCC_Map <- ggplot(data = selection_map1) +
+      geom_sf(aes(fill = TCC_Burned/1000000)) +
+      scale_fill_paletteer_c("viridis::inferno") + #Colors
+      labs(title = input$year_map1, xlab = "", ylab = "", fill = "MMT carbon") + #Labels
+      theme(text = element_text(size=20), #Set text size
+            axis.text.x = element_blank(), # removes coordinates
+            panel.grid.major = element_blank(), #Removes grid
+            panel.grid.minor = element_blank(),
+            legend.key.height = unit(25, "mm") # Legend Height
+      ) 
+    TCC_Map
+    
+    
+  })
+  
+  ################### Map 2
+  
+  output$map2 <- renderPlot({
+    
+    
+    
+    
+    
+    
+    selection_map2 <- subset(Burned_sf, Year == input$year_map2)
+    
+    
+    AB_MAP <- ggplot(data = selection_map2) +
+      geom_sf(aes(fill = Proportion_Burned)) +
+      scale_fill_paletteer_c("viridis::inferno", limits = c(0, max(Burned_sf$Proportion_Burned, na.rm = TRUE))) + #colors and limits for scale
+      labs(title = input$year_map2, xlab = "", ylab = "", fill = "Proportion Burned") + #Labels
+      theme(text = element_text(size=20), #Set text size
+            axis.text.x = element_blank(), # removes coordinates
+            panel.grid.major = element_blank(), #Removes grid
+            panel.grid.minor = element_blank(),
+            legend.key.height = unit(25, "mm") # Legend Height
+      )
+    
+    AB_MAP
+    
+    
+  })
+  
+  ##################  Map 3
+  
+  output$map3 <- renderPlot({
+    
+    selection_map3 <- subset(burners_year_sf, Year == input$year_map3) #subsets appropriate data
+    
+    
+    burners_year_plot <- ggplot(data = selection_map3) +
+      geom_sf(aes(fill = TCC_per_pop))+
+      scale_fill_paletteer_c("viridis::inferno") + #Colors 
+      labs(title = input$year_map3, xlab = "", ylab = "", fill = "Tons Carbon") + #Labels
+      theme(text = element_text(size=20), #Set text size
+            axis.text.x = element_blank(), # removes coordinates
+            panel.grid.major = element_blank(), #Removes grid
+            panel.grid.minor = element_blank(),
+            legend.key.height = unit(25, "mm") # Legend Height
+      )
+    
+    burners_year_plot
+    
+  })
+  
+  
+}
+
+
+
+#The line that makes the rest of it actually do somthing
+shinyApp(ui = ui, server = server)
